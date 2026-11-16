@@ -7,7 +7,7 @@ module Keter.Yaml.FilePath
     ( decodeFileRelative
     , lookupBase
     , lookupBaseMaybe
-    , BaseDir
+    , BaseDir(..)
     , ParseYamlFile (..)
     , NonEmptyVector (..)
     ) where

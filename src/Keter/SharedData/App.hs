@@ -12,6 +12,7 @@ module Keter.SharedData.App
 import Control.Concurrent.STM (STM, TVar, readTVar)
 import Data.Set (Set)
 import Data.Text (Text, pack)
+import Keter.ACME (AcmeState)
 import Keter.Common (AppId, Host, Plugins, Port)
 import Keter.Conduit.Process.Unix
        ( MonitoredProcess
@@ -45,6 +46,9 @@ data AppStartConfig = AppStartConfig
     , ascPortPool       :: !PortPool
     , ascPlugins        :: !Plugins
     , ascKeterConfig    :: !KeterConfig
+    , ascAcmeState      :: !(Maybe AcmeState)
+    -- ^ ACME manager for automatic certificate requests.  'Nothing' when
+    --   no @acme:@ section is present in @keter-config.yaml@.
     }
 
 data App = App

@@ -14,6 +14,7 @@ module Keter.HostManager
     , deactivateApp
     , reactivateApp
     , lookupAction
+    , updateCredentials
       -- * Initialize
     , start
     ) where
@@ -204,3 +205,18 @@ lookupAction (HostManager mstate) host = do
         Nothing -> Nothing
         Just (HVActive _ action cert) -> Just (action, cert)
         Just (HVReserved _) -> Nothing
+
+-- | Update TLS credentials for a list of hosts in-place.  Used by the ACME
+--   renewal background thread to push new certificates without restarting apps.
+--   Only 'HVActive' entries are updated; reserved or unknown hosts are ignored.
+updateCredentials :: HostManager -> [Host] -> TLS.Credentials -> IO ()
+updateCredentials (HostManager mstate) hosts newCreds =
+    atomicModifyIORef' mstate $ \state0 ->
+        (foldr update state0 hosts, ())
+  where
+    update host state =
+        let hostBS = encodeUtf8 (CI.original host)
+        in case LabelMap.lookup hostBS state of
+            Just (HVActive aid action _) ->
+                LabelMap.insert hostBS (HVActive aid action newCreds) state
+            _ -> state

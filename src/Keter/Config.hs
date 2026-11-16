@@ -6,7 +6,8 @@ module Keter.Config
 
 import Keter.Config.V04 as X (PortSettings(..), TLSConfig(..))
 import Keter.Config.V10 as X
-       ( AppInput(..)
+       ( AcmeConfig(..)
+       , AppInput(..)
        , BackgroundConfig(..)
        , BundleConfig(..)
        , KeterConfig(..)
@@ -23,4 +24,5 @@ import Keter.Config.V10 as X
        , StanzaRaw(..)
        , StaticFilesConfig(..)
        , WebAppConfig(..)
+       , defaultAcmeDirectoryUrl
        )

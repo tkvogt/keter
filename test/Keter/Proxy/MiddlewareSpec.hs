@@ -12,6 +12,8 @@ import Control.Monad.Logger
 import Control.Monad.Reader
 import Data.Aeson (eitherDecode)
 import Data.ByteString (ByteString)
+import Data.IORef (newIORef)
+import qualified Data.Map.Strict as Map
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Keter.Config.Middleware (MiddlewareConfig, processMiddlewareIO)
 import Keter.Config.V10
@@ -59,6 +61,7 @@ mkSettings
   -> ByteString             -- proxy-exception body
   -> IO ProxySettings
 mkSettings manager hostLookup useHeader mHealth exBody = do
+  acmeChallenges <- newIORef Map.empty
   pure $ MkProxySettings
     { psHostLookup     = hostLookup
     , psManager        = manager
@@ -69,6 +72,7 @@ mkSettings manager hostLookup useHeader mHealth exBody = do
     , psIpFromHeader   = useHeader
     , psConnectionTimeBound = 5 * 60 * 1000
     , psHealthcheckPath = mHealth
+    , psAcmeChallenges  = acmeChallenges
     }
 
 decodeMids :: LBS.ByteString -> [MiddlewareConfig]

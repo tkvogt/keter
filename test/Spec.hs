@@ -10,6 +10,8 @@ import Control.Monad.Logger
 import Control.Monad.Reader
 import Control.Monad.STM
 import Data.ByteString (ByteString)
+import Data.IORef (newIORef)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Keter.Config.V10
 import Keter.Context
@@ -99,6 +101,7 @@ headThenPostNoCrash = do
     settings :: Manager -> IO ProxySettings  -- Now returns IO ProxySettings
     settings manager = do
       -- Remove MiddlewareCache usage - middlewares are now compiled at activation
+      acmeChallenges <- newIORef Map.empty
       pure $ MkProxySettings {
           psHostLookup     = const $ pure $ Just ((PAPort 6781 id Nothing, False), error "unused tls certificate")
         , psManager        = manager
@@ -108,4 +111,5 @@ headThenPostNoCrash = do
         , psIpFromHeader   = False
         , psConnectionTimeBound = 5 * 60 * 1000
         , psHealthcheckPath = Nothing
+        , psAcmeChallenges = acmeChallenges
         }

@@ -10,7 +10,7 @@ import Data.Aeson
        ( FromJSON
        , Object
        , ToJSON
-       , Value(Bool)
+       , Value(Bool, String)
        , object
        , withBool
        , withObject
@@ -83,12 +83,16 @@ data SSLConfig
     = SSLFalse
     | SSLTrue
     | SSL !FilePath !(Vector FilePath) !FilePath
+    | SSLAcme
+    -- ^ Request a certificate automatically via ACME (Let's Encrypt).
+    --   Requires @acme:@ section in @keter-config.yaml@.
     deriving (Show, Eq, Ord)
 
 instance ParseYamlFile SSLConfig where
     parseYamlFile _ v@(Bool _) =
         withBool "ssl" ( \b ->
             return (if b then SSLTrue else SSLFalse) ) v
+    parseYamlFile _ (String "acme") = return SSLAcme
     parseYamlFile basedir v =  withObject "ssl" ( \o -> do
              mcert <- lookupBaseMaybe basedir o "certificate"
              mkey <- lookupBaseMaybe basedir o "key"
@@ -103,11 +107,13 @@ instance ParseYamlFile SSLConfig where
 instance ToJSON SSLConfig where
     toJSON SSLTrue = Bool True
     toJSON SSLFalse = Bool False
+    toJSON SSLAcme = String "acme"
     toJSON (SSL c cc k) = object [ "certificate" .= c
                                  , "chain-certificates" .= cc
                                  , "key" .= k
                                  ]
 instance FromJSON SSLConfig where
+    parseJSON (String "acme") = return SSLAcme
     parseJSON v@(Bool _) = withBool "ssl" ( \b ->
                     return (if b then SSLTrue else SSLFalse) ) v
     parseJSON v = withObject "ssl" ( \o -> do

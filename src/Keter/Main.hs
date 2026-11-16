@@ -11,20 +11,26 @@ module Keter.Main
     ( keter
     ) where
 
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (waitAny, withAsync)
 import Control.Exception (SomeException, bracket, throwIO, try)
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Monad (forM, forM_, forever, unless, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.IO.Unlift (MonadUnliftIO, withRunInIO)
 import Control.Monad.Logger (LoggingT, logInfo, runLoggingT)
 import Control.Monad.Logger qualified as L
 import Control.Monad.Reader (MonadReader, ReaderT, ask, asks, runReaderT)
+import Data.ByteString (ByteString)
+import Data.CaseInsensitive qualified as CI
+import Data.IORef (IORef, newIORef)
 import Data.Map qualified as Map
+import Data.Map.Strict qualified as MapStrict
 import Data.String (fromString)
 import Data.Text qualified as T
 import Data.Text.Read qualified
 import Data.Time (getCurrentTime)
 import Data.Vector qualified as V
+import Keter.ACME qualified as ACME
 import Keter.AppManager qualified as AppMan
 import Keter.Cli
 import Keter.Common
@@ -60,7 +66,7 @@ keter :: FilePath -- ^ root directory or config file
       -> IO ()
 keter input mkPlugins =
     runKeterConfigReader input . runKeterLogger . runKeterM $
-        withManagers mkPlugins $ \hostman appMan -> do
+        withManagers mkPlugins $ \hostman appMan challengeMap -> do
             KeterConfig{..} <- ask
             $logInfo "Launching cli"
             forM_ kconfigCliPort $ \port ->
@@ -75,7 +81,7 @@ keter input mkPlugins =
             $logInfo "Started watching"
             startWatching appMan
             $logInfo "Started listening"
-            startListening hostman
+            startListening challengeMap hostman
 
 -- | Load up Keter config and evaluate a ReaderT context with it
 runKeterConfigReader :: MonadIO m
@@ -128,7 +134,7 @@ runKeterLogger ctx = do
             Log.loggerLog logger bs
 
 withManagers :: [FilePath -> IO Plugin]
-             -> (HostMan.HostManager -> AppMan.AppManager -> KeterM KeterConfig a)
+             -> (HostMan.HostManager -> AppMan.AppManager -> IORef (MapStrict.Map ByteString ByteString) -> KeterM KeterConfig a)
              -> KeterM KeterConfig a
 withManagers mkPlugins f = do
     cfg@KeterConfig{..} <- ask
@@ -149,6 +155,14 @@ withManagers mkPlugins f = do
                     Left (_ :: SomeException) -> error $ "Invalid user ID: " ++ T.unpack t
                     Right ue -> return $ Just (T.pack $ userName ue, (userID ue, userGroupID ue))
 
+    -- Shared challenge map between ACME module and the HTTP proxy.
+    challengeMap <- liftIO $ newIORef (MapStrict.empty :: MapStrict.Map ByteString ByteString)
+
+    -- Optionally initialise the ACME state if an 'acme:' section was configured.
+    mAcmeState <- liftIO $ case kconfigAcmeConfig of
+        Nothing  -> return Nothing
+        Just acmeCfg -> Just <$> ACME.initAcme acmeCfg challengeMap
+
     let appStartConfig = AppStartConfig
             { ascTempFolder = tf
             , ascSetuid = muid
@@ -157,9 +171,25 @@ withManagers mkPlugins f = do
             , ascPortPool = portpool
             , ascPlugins = plugins
             , ascKeterConfig = cfg
+            , ascAcmeState = mAcmeState
             }
+
+    -- Background thread: check for expiring ACME certificates every 12 hours.
+    case mAcmeState of
+        Nothing -> return ()
+        Just acmeSt -> liftIO $ void $ forkIO $ forever $ do
+            threadDelay (12 * 60 * 60 * 1000000)   -- 12 hours
+            renewed <- ACME.renewExpiring acmeSt
+            forM_ renewed $ \(primaryDomain, newCreds) -> do
+                -- Update live credentials for every host using this cert.
+                -- We look up the hosts from the domain name stored in the cert dir.
+                let domsFile = ACME.certDirFor acmeSt primaryDomain </> "domains"
+                domsRaw <- lines <$> readFile domsFile
+                let hosts = map (CI.mk . T.pack) domsRaw
+                HostMan.updateCredentials hostman hosts newCreds
+
     appMan <- withMappedConfig (const appStartConfig) AppMan.initialize
-    f hostman appMan
+    f hostman appMan challengeMap
 
 launchInitial :: AppMan.AppManager -> KeterM KeterConfig ()
 launchInitial appMan = do
@@ -224,10 +254,10 @@ listDirectoryTree fp = do
              return [fp1]
            ) (filter (\x -> x /= "." && x /= "..") dir)
 
-startListening :: HostMan.HostManager -> KeterM KeterConfig ()
-startListening hostman = do
+startListening :: IORef (MapStrict.Map ByteString ByteString) -> HostMan.HostManager -> KeterM KeterConfig ()
+startListening challengeMap hostman = do
     KeterConfig{..} <- ask
-    settings <- Proxy.makeSettings hostman
+    settings <- Proxy.makeSettings challengeMap hostman
     withMappedConfig (const settings) $ withRunInIO $ \rio ->
         liftIO $ runAndBlock kconfigListeners $ \ls ->
             rio $ Proxy.reverseProxy ls

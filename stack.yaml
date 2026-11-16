@@ -14,3 +14,7 @@ extra-deps:
 
   # Add keter-rate-limiting-plugin
   - keter-rate-limiting-plugin-0.2.0.2
+
+  # crypton is a fork of cryptonite used for ACME certificate management.
+  # Not in LTS-20, so we pull it directly from Hackage.
+  - crypton-1.0.5

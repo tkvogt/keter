@@ -76,6 +76,51 @@ instance ToJSON BundleConfig where
         , "plugins" .= bconfigPlugins
         ]
 
+-- | Global ACME (Let's Encrypt) configuration.
+data AcmeConfig = AcmeConfig
+    { acmeEmail     :: !Text
+    -- ^ Contact email for ACME account registration.
+    , acmeDirectory :: !Text
+    -- ^ ACME directory URL.  Defaults to Let's Encrypt production.
+    , acmeCertDir   :: !FilePath
+    -- ^ Directory to store account key and obtained certificates.
+    --   Resolved relative to the keter root directory.
+    }
+    deriving (Show, Eq)
+
+defaultAcmeDirectoryUrl :: Text
+defaultAcmeDirectoryUrl = "https://acme-v02.api.letsencrypt.org/directory"
+
+instance ParseYamlFile AcmeConfig where
+    parseYamlFile basedir@(BaseDir kdir) = withObject "AcmeConfig" $ \o -> do
+        email <- o .: "email"
+        dir   <- o .:? "directory" .!= defaultAcmeDirectoryUrl
+        certDir <- fmap (fromMaybe (F.combine kdir "acme")) $
+                       lookupBaseMaybe basedir o "cert-dir"
+        return AcmeConfig
+            { acmeEmail     = email
+            , acmeDirectory = dir
+            , acmeCertDir   = certDir
+            }
+
+instance FromJSON AcmeConfig where
+    parseJSON = withObject "AcmeConfig" $ \o -> do
+        email   <- o .: "email"
+        dir     <- o .:? "directory" .!= defaultAcmeDirectoryUrl
+        certDir <- o .:? "cert-dir" .!= "acme"
+        return AcmeConfig
+            { acmeEmail     = email
+            , acmeDirectory = dir
+            , acmeCertDir   = certDir
+            }
+
+instance ToJSON AcmeConfig where
+    toJSON AcmeConfig{..} = object
+        [ "email"     .= acmeEmail
+        , "directory" .= acmeDirectory
+        , "cert-dir"  .= acmeCertDir
+        ]
+
 data ListeningPort = LPSecure !HostPreference !Port
                               !F.FilePath !(V.Vector F.FilePath) !F.FilePath
                               !Bool
@@ -124,6 +169,9 @@ data KeterConfig = KeterConfig
     , kconfigHealthcheckPath      :: !(Maybe Text)
 
     , kconfigGracefulDrainMicros  :: !(Maybe Int)
+
+    , kconfigAcmeConfig           :: !(Maybe AcmeConfig)
+    -- ^ Optional ACME configuration for automatic certificate management.
     }
 
 instance ToCurrent KeterConfig where
@@ -146,6 +194,7 @@ instance ToCurrent KeterConfig where
         , kconfigRotateLogs = True
         , kconfigHealthcheckPath = Nothing
         , kconfigGracefulDrainMicros = Nothing
+        , kconfigAcmeConfig          = Nothing
         }
       where
         getSSL Nothing = V.empty
@@ -176,6 +225,7 @@ defaultKeterConfig = KeterConfig
         , kconfigRotateLogs = True
         , kconfigHealthcheckPath = Nothing
         , kconfigGracefulDrainMicros = Nothing
+        , kconfigAcmeConfig = Nothing
         }
 
 instance ParseYamlFile KeterConfig where
@@ -203,6 +253,7 @@ instance ParseYamlFile KeterConfig where
             <*> o .:? "rotate-logs" .!= True
             <*> o .:? "app-crash-hook"
             <*> o .:? "graceful-drain-micros"
+            <*> lookupBaseMaybe basedir o "acme"
 
 -- | Whether we should force redirect to HTTPS routes.
 type RequiresSecure = Bool

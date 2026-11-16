@@ -36,6 +36,7 @@ import Data.Text (Text, pack, unpack)
 import Data.Text.Encoding (encodeUtf8)
 import Data.Vector qualified as V
 import Data.Yaml
+import Keter.ACME qualified as ACME
 import Keter.Common
 import Keter.Conduit.Process.Unix
        ( monitorProcess
@@ -122,11 +123,23 @@ withActions :: BundleConfig
 withActions bconfig f =
     loop (V.toList $ bconfigStanzas bconfig) [] [] Map.empty
   where
-    -- todo: add loading from relative location
-    loadCert (SSL certFile chainCertFiles keyFile) =
+    -- Load TLS credentials for a stanza's SSL config.
+    loadCert :: [Host] -> SSLConfig -> KeterM AppStartConfig TLS.Credentials
+    loadCert _hosts (SSL certFile chainCertFiles keyFile) = liftIO $
          either (const mempty) (TLS.Credentials . (:[]))
             <$> TLS.credentialLoadX509Chain certFile (V.toList chainCertFiles) keyFile
-    loadCert _ = return mempty
+    loadCert hosts SSLAcme = do
+        AppStartConfig{..} <- ask
+        case ascAcmeState of
+            Nothing -> do
+                $logWarn "ssl: acme is set but no 'acme:' section found in keter-config.yaml; skipping ACME"
+                return mempty
+            Just acmeSt -> liftIO $ do
+                -- Use the primary (approot) host as the cert storage key
+                let primaryDomain = CI.original (head hosts)
+                    allDomains    = map CI.original hosts
+                ACME.getOrRequestCert acmeSt primaryDomain allDomains
+    loadCert _hosts _ = return mempty
 
     setupMW :: [Keter.Config.Middleware.MiddlewareConfig] -> IO Middleware
     setupMW = processMiddlewareIO
@@ -143,7 +156,7 @@ withActions bconfig f =
               let wac' = wac { waconfigPort = port }
                   action = PAPort port mw (waconfigTimeout wac)
                   hosts = Set.toList $ Set.insert (waconfigApprootHost wac) (waconfigHosts wac)
-              cert <- loadCert (waconfigSsl wac)
+              cert <- rio $ loadCert hosts (waconfigSsl wac)
               rio $ loop
                 stanzas
                 (wac' : wacs)
@@ -151,31 +164,28 @@ withActions bconfig f =
                 (Map.unions $ actions : map (\host -> Map.singleton host ((action, rs), cert)) hosts)
           )
     loop (Stanza (StanzaStaticFiles sfc) rs:stanzas) wacs backs actions0 = do
-        cert <- liftIO $ loadCert $ sfconfigSsl sfc
+        let hosts = Set.toList (sfconfigHosts sfc)
+        cert <- loadCert hosts (sfconfigSsl sfc)
         mw <- liftIO $ setupMW (sfconfigMiddleware sfc)
         let action = PAStatic sfc mw
-        loop stanzas wacs backs (actions action cert)
-      where
-        actions action cert =
-          Map.unions $ actions0 :
-            map (\host -> Map.singleton host ((action, rs), cert))
-                (Set.toList (sfconfigHosts sfc))
+        loop stanzas wacs backs (addHosts actions0 action cert rs hosts)
     loop (Stanza (StanzaRedirect red) rs:stanzas) wacs backs actions0 = do
-        cert <- liftIO $ loadCert $ redirconfigSsl red
+        let hosts = Set.toList (redirconfigHosts red)
+        cert <- loadCert hosts (redirconfigSsl red)
         let action = PARedirect red
-        loop stanzas wacs backs (actions action cert)
-      where
-        actions action cert =
-          Map.unions $ actions0 :
-            map (\host -> Map.singleton host ((action, rs), cert))
-                (Set.toList (redirconfigHosts red))
+        loop stanzas wacs backs (addHosts actions0 action cert rs hosts)
     loop (Stanza (StanzaReverseProxy rev mid to) rs:stanzas) wacs backs actions0 = do
-        cert <- liftIO $ loadCert $ reversingUseSSL rev
+        let host = CI.mk $ reversingHost rev
+        cert <- loadCert [host] (reversingUseSSL rev)
         mw <- liftIO $ setupMW mid
         let action = PAReverseProxy rev mw to
-        loop stanzas wacs backs (Map.insert (CI.mk $ reversingHost rev) ((action, rs), cert) actions0)
+        loop stanzas wacs backs (Map.insert host ((action, rs), cert) actions0)
     loop (Stanza (StanzaBackground back) _:stanzas) wacs backs actions =
         loop stanzas wacs (back:backs) actions
+
+    addHosts actions0 action cert rs hosts =
+        Map.unions $ actions0 :
+            map (\host -> Map.singleton host ((action, rs), cert)) hosts
 
 -- | Gives the log file or log tag name for a given 'AppId'
 appLogName :: AppId -> String

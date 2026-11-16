@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -24,6 +25,9 @@ import Data.ByteString qualified as S
 import Data.ByteString.Char8 qualified as S8
 import Data.CaseInsensitive qualified as CI
 import Data.Functor ((<&>))
+import Data.IORef (IORef, readIORef)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text as T (Text, pack, unwords)
 import Data.Text.Encoding (decodeUtf8With, encodeUtf8)
 import Data.Text.Encoding.Error (lenientDecode)
@@ -85,10 +89,13 @@ data ProxySettings = MkProxySettings
   , psUnknownHost         :: ByteString -> ByteString
   , psMissingHost         :: ByteString
   , psProxyException      :: ByteString
+  , psAcmeChallenges      :: !(IORef (Map ByteString ByteString))
+  -- ^ Shared map of ACME HTTP-01 challenges: token → key-authorisation.
+  --   Populated by 'Keter.ACME' during certificate issuance.
   }
 
-makeSettings :: HostMan.HostManager -> KeterM KeterConfig ProxySettings
-makeSettings hostman = do
+makeSettings :: IORef (Map ByteString ByteString) -> HostMan.HostManager -> KeterM KeterConfig ProxySettings
+makeSettings acmeChallenges hostman = do
     KeterConfig{..} <- ask
     psManager <- liftIO $ HTTP.newManager HTTP.tlsManagerSettings
     psMissingHost <- taggedReadFile "missing-host-response-file" kconfigMissingHostResponse defaultMissingHostBody id
@@ -100,6 +107,7 @@ makeSettings hostman = do
     let psIpFromHeader = kconfigIpFromHeader
     let psHealthcheckPath = encodeUtf8 <$> kconfigHealthcheckPath
     let psTrustForwardedFor _req = True
+    let psAcmeChallenges = acmeChallenges
     pure $ MkProxySettings{..}
     where
         psHostLookup = HostMan.lookupAction hostman . CI.mk
@@ -179,12 +187,35 @@ withClient isSecure = do
     getDest MkProxySettings{..} _ req
       | psHealthcheckPath == Just (Wai.rawPathInfo req)
       = return (defaultLocalWaiProxySettings, WPRResponse healthcheckResponse)
+    -- serve ACME HTTP-01 challenges at /.well-known/acme-challenge/<token>
+    getDest MkProxySettings{..} _ req
+      | Just token <- acmeChallengeToken (Wai.rawPathInfo req)
+      = do
+          m <- readIORef psAcmeChallenges
+          let resp = case Map.lookup token m of
+                Just keyAuth ->
+                    Wai.responseBuilder status200
+                        [("Content-Type", "text/plain")]
+                        (copyByteString keyAuth)
+                Nothing ->
+                    Wai.responseBuilder status404
+                        [("Content-Type", "text/plain")]
+                        (copyByteString "Not found")
+          return (defaultLocalWaiProxySettings, WPRResponse resp)
     -- inspect Host header to determine which App to proxy to
     getDest cfg@MkProxySettings{..} useHeaderPred req =
         case Wai.requestHeaderHost req of
             Nothing -> do
               return (defaultLocalWaiProxySettings, WPRResponse $ missingHostResponse psMissingHost)
             Just host -> processHost cfg useHeaderPred req host
+
+    -- | Extract the challenge token from a /.well-known/acme-challenge/<token> path.
+    acmeChallengeToken :: ByteString -> Maybe ByteString
+    acmeChallengeToken path
+        | S.isPrefixOf "/.well-known/acme-challenge/" path =
+            let token = S.drop (S.length "/.well-known/acme-challenge/") path
+            in if S.null token then Nothing else Just token
+        | otherwise = Nothing
 
     processHost :: ProxySettings -> (Wai.Request -> Bool) -> Wai.Request -> S.ByteString -> IO (LocalWaiProxySettings, WaiProxyResponse)
     processHost cfg@MkProxySettings{..} useHeaderPred req host = do
