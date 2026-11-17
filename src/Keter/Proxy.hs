@@ -10,6 +10,7 @@ module Keter.Proxy
     , makeSettings
     , ProxySettings(..)
     , TLSConfig (..)
+    , acmeChallengeToken
     ) where
 
 import Blaze.ByteString.Builder (copyByteString, toByteString)
@@ -113,6 +114,15 @@ makeSettings acmeChallenges hostman = do
         psHostLookup = HostMan.lookupAction hostman . CI.mk
 
 
+-- | Extract the challenge token from a /.well-known/acme-challenge/<token> path.
+acmeChallengeToken :: ByteString -> Maybe ByteString
+acmeChallengeToken path
+    | S.isPrefixOf "/.well-known/acme-challenge/" path =
+        let token = S.drop (S.length "/.well-known/acme-challenge/") path
+        in if S.null token then Nothing else Just token
+    | otherwise = Nothing
+
+
 taggedReadFile :: Text -> Maybe FilePath -> r -> (ByteString -> r) -> KeterM KeterConfig r
 taggedReadFile _    Nothing    fallback _               = pure fallback
 taggedReadFile tag (Just file) fallback processContents = do
@@ -208,14 +218,6 @@ withClient isSecure = do
             Nothing -> do
               return (defaultLocalWaiProxySettings, WPRResponse $ missingHostResponse psMissingHost)
             Just host -> processHost cfg useHeaderPred req host
-
-    -- | Extract the challenge token from a /.well-known/acme-challenge/<token> path.
-    acmeChallengeToken :: ByteString -> Maybe ByteString
-    acmeChallengeToken path
-        | S.isPrefixOf "/.well-known/acme-challenge/" path =
-            let token = S.drop (S.length "/.well-known/acme-challenge/") path
-            in if S.null token then Nothing else Just token
-        | otherwise = Nothing
 
     processHost :: ProxySettings -> (Wai.Request -> Bool) -> Wai.Request -> S.ByteString -> IO (LocalWaiProxySettings, WaiProxyResponse)
     processHost cfg@MkProxySettings{..} useHeaderPred req host = do

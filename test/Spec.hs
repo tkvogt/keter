@@ -26,6 +26,7 @@ import Network.Wreq qualified as Wreq
 import Test.Tasty
 import Test.Tasty.HUnit
 import qualified Keter.Config.V10Spec as V10
+import qualified Keter.Proxy.ACMEChallengeSpec as ProxyACME
 import qualified Keter.Proxy.MiddlewareSpec as ProxyMW
 import qualified Keter.RewriteSpec as Rewrite
 
@@ -40,6 +41,7 @@ keterTests =
     , testCase "Wildcard Domains" caseWildcards
     , testCase "Head then post doesn't crash" headThenPostNoCrash
     , ProxyMW.tests
+    , ProxyACME.tests
     , V10.tests
     , Rewrite.tests
     ]

@@ -142,6 +142,7 @@ test-suite test
   default-extensions: ImportQualifiedPost
   main-is:            Spec.hs
   other-modules:      Keter.Config.V10Spec
+                    , Keter.Proxy.ACMEChallengeSpec
                     , Keter.Proxy.MiddlewareSpec
                     , Keter.RewriteSpec
   type:               exitcode-stdio-1.0
@@ -151,6 +152,7 @@ test-suite test
     , bytestring
     , containers
     , conduit
+    , filepath
     , http-client
     , http-conduit
     , http-types

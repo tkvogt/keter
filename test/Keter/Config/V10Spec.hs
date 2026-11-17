@@ -4,8 +4,10 @@ module Keter.Config.V10Spec (tests) where
 
 import Data.ByteString.Char8 qualified as BS
 import Data.Set qualified as Set
+import Keter.Common (SSLConfig (..))
 import Keter.Config.V10
 import Keter.Yaml.FilePath (decodeFileRelative)
+import System.FilePath (takeFileName)
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile)
 import Test.Tasty
@@ -16,6 +18,9 @@ tests = testGroup "Keter.Config.V10 (WebAppConfig parsing)"
   [ testCase "port-env-vars parses a list of variable names" casePortEnvVarsList
   , testCase "port-env-vars defaults to empty when omitted" casePortEnvVarsDefault
   , testCase "port-env-vars parses empty list" casePortEnvVarsEmpty
+  , testCase "ssl: acme parses" caseSslAcme
+  , testCase "acme config parses" caseAcmeConfig
+  , testCase "acme config defaults directory and cert-dir" caseAcmeDefaults
   ]
 
 -- | Helper: write YAML bytes to a temp file, then parse as a 'WebAppConfig'.
@@ -56,3 +61,41 @@ casePortEnvVarsEmpty = do
         , "port-env-vars: []"
         ]
     waconfigPortEnvVars wac @?= Set.empty
+
+caseSslAcme :: IO ()
+caseSslAcme = do
+    wac <- parseWebAppConfig $ BS.unlines
+        [ "exec: /tmp/myapp"
+        , "host: example.com"
+        , "ssl: acme"
+        ]
+    waconfigSsl wac @?= SSLAcme
+
+parseAcmeConfig :: BS.ByteString -> IO AcmeConfig
+parseAcmeConfig yaml =
+    withSystemTempFile "keter-acme-test-.yaml" $ \fp h -> do
+        BS.hPut h yaml
+        hClose h
+        result <- decodeFileRelative fp
+        case result of
+            Left err -> assertFailure ("Failed to parse ACME config: " <> show err) >> error "unreachable"
+            Right cfg -> return cfg
+
+caseAcmeConfig :: IO ()
+caseAcmeConfig = do
+    cfg <- parseAcmeConfig $ BS.unlines
+        [ "email: test@example.com"
+        , "directory: https://acme.example/directory"
+        , "cert-dir: acme"
+        ]
+    acmeEmail cfg @?= "test@example.com"
+    acmeDirectory cfg @?= "https://acme.example/directory"
+    takeFileName (acmeCertDir cfg) @?= "acme"
+
+caseAcmeDefaults :: IO ()
+caseAcmeDefaults = do
+    cfg <- parseAcmeConfig $ BS.unlines
+        [ "email: test@example.com"
+        ]
+    acmeDirectory cfg @?= defaultAcmeDirectoryUrl
+    takeFileName (acmeCertDir cfg) @?= "acme"
